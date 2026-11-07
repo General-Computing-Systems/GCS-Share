@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GCS Share | Connect</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            background: #0b1020;
+            color: #eef2ff;
+            font-family: Arial, sans-serif;
+        }
+
+        main {
+            width: min(100%, 460px);
+            padding: 36px;
+            text-align: center;
+            background: #11182b;
+            border: 1px solid #293451;
+            border-radius: 20px;
+        }
+
+        h1 {
+            font-size: 2rem;
+            margin-top: 0;
+        }
+
+        p {
+            color: #aab4ca;
+            line-height: 1.6;
+        }
+
+        #choices {
+            display: none;
+            gap: 14px;
+            margin-top: 28px;
+        }
+
+        button {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            background: #a5b4fc;
+            color: #0b1020;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #c7d2fe;
+        }
+
+        #status {
+            margin-top: 24px;
+            font-size: 0.9rem;
+        }
+
+        #result {
+            display: none;
+            margin-top: 20px;
+            padding: 14px;
+            border-radius: 10px;
+            background: #202b45;
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <h1>GCS Share</h1>
+
+        <p id="description">
+            Connecting to your GCS Share device...
+        </p>
+
+        <p id="status">Verifying pairing token...</p>
+
+        <div id="choices">
+            <button id="send">Send Files</button>
+            <button id="receive">Receive Files</button>
+        </div>
+
+        <div id="result">
+            <p id="result-text"></p>
+        </div>
+    </main>
+
+    <script>
+        const status = document.getElementById("status");
+        const description = document.getElementById("description");
+        const choices = document.getElementById("choices");
+        const result = document.getElementById("result");
+        const resultText = document.getElementById("result-text");
+
+        async function connect() {
+            const params = new URLSearchParams(window.location.search);
+            const token = params.get("token");
+
+            if (!token) {
+                status.textContent = "No pairing token was provided.";
+                return;
+            }
+
+            history.replaceState({}, document.title, "/connect.html");
+
+            try {
+                const response = await fetch("/api/pairing/verify", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ token })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(data.message || "Pairing failed");
+                }
+
+                sessionStorage.setItem("gcsDeviceId", data.deviceId);
+                sessionStorage.setItem("gcsSessionToken", data.sessionToken);
+
+                status.textContent = "Successfully connected!";
+                description.textContent = 
+                    "Your device is now paired with GCS Share.";
+
+                choices.style.display = "grid";
+
+            } catch (error) {
+                status.textContent = "Connection failed: " + error.message;
+                description.textContent = 
+                    "Please return to the PC and generate a new QR code.";
+            }
+        }
+
+        function chooseMode(mode) {
+            sessionStorage.setItem("gcsTransferMode", mode);
+
+            result.style.display = "block";
+
+            if (mode === "send") {
+                resultText.textContent = 
+                    "Send selected. Phone -> PC. File transfer is not implemented yet.";
+            } else {
+                resultText.textContent =
+                    "Receive selected. PC -> Phone. File Transfer is not implemented yet.";
+            }
+        }
+
+        document.getElementById("send").addEventListener("click", () => {
+            chooseMode("send");
+        });
+
+        document.getElementById("receive").addEventListener("click", () => {
+            chooseMode("receive");
+        });
+
+        connect();
+    </script>
+</body>
+</html>
