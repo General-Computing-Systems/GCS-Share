@@ -73,7 +73,10 @@ app.post("/api/pairing/qr", async (req, res) => {
     try {
         const pairing = createPairing();
 
-        const qrCode = await QRCode.toDataURL(pairing.token);
+        const connectionUrl =
+            `${req.protocol}://${req.get("host")}/conect.html?token=${encodeURIComponent(pairing.token)}`;
+        
+        const qrCode = await QRCode.toDataURL(connectionUrl);
 
         res.json({
             success: true,
