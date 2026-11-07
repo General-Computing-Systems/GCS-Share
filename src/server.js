@@ -30,6 +30,33 @@ app.get("/api/status", (req, res) => {
     });
 });
 
+app.get("/api/devices/me", (req, res) => {
+    const deviceId = req.get("x-device-id");
+    const sessionToken = req.get("x-session-token");
+
+    if (!deviceId || !sessionToken) {
+        return res.status(401).json({
+            success: false,
+            message: "Missing device credentials"
+        });
+    }
+
+    const valid = verifySession(deviceId, sessionToken);
+
+    if (!valid) {
+        return res.status(401).json({
+            success: false,
+            message: "Invalid session"
+        });
+    }
+
+    res.json({
+        success: true,
+        deviceId,
+        status: "Connected"
+    });
+});
+
 app.post("/api/pairing/create", (req, res) => {
     const pairing = createPairing();
 

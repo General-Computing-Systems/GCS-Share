@@ -34,7 +34,7 @@ function verifySession(deviceId, sessionToken) {
         .update(sessionToken)
         .digest("hex");
 
-    return crypti.timingSafeEqual(
+    return crypto.timingSafeEqual(
         Buffer.from(tokenHash, "hex"),
         Buffer.from(session.tokenHash, "hex")
     );
