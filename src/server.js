@@ -2,9 +2,42 @@ const express = require('express');
 const path = require('path');
 const os = require("os");
 const QRCode = require('qrcode');
+const fs = require("fs");
+const crypto = require("crypto");
+const multer = require("multer")
 
 const app = express();
 const PORT = 3000;
+
+const uploadDir = path.join(__dirname, "../uploads");
+
+fs.mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, uploadDir);
+    },
+
+    filename: (req, file, cb) => {
+        const safeName = path.basename(
+            file.originalname.replace(/\\/g, "/")
+        )
+        .replace(/[\u0000-\u001f\u007f]/g, "")
+        .replace(/[^a-zA-Z0-9._ -]/g, "")
+        .trim()
+        .replace(/^\.+/, "")
+        .slice(0,100) || "file";
+
+        cb(null, `${crypto.randomUUID()}-${safeName}`);
+    }
+});
+
+const upload = multer({
+    storage,
+    limits: {
+        fileSize: 50 * 1024 * 1024
+    }
+});
 
 app.use(express.json());
 
@@ -20,7 +53,52 @@ const {
     removeSession
 } = require("./sessions");
 
+function authenticateDevice(req, res, next) {
+    const deviceId = req.get("x-device-id");
+    const sessionToken = req.get("x-session-token");
+
+    if (!deviceId || !sessionToken) {
+        return res.status(401).json({
+            success: false,
+            message: "Missing device credentials"
+        });
+    }
+
+    if (!verifySession(deviceId, sessionToken)) {
+        return res.status(401).json({
+            success: false,
+            message: "Invalid session"
+        });
+    }
+
+    next();
+}
+
 app.use(express.static(path.join(__dirname, "../public")));
+
+app.post(
+    "/api/upload",
+    authenticateDevice,
+    upload.single("file"),
+    (req, res) => {
+        if (!req.file) {
+            return res.status(400).json({
+                success: false,
+                message: "No file provided"
+            });
+        }
+
+        res.json({
+            success: true,
+            message: "File uploaded successfully",
+            file: {
+                id: req.file.filename,
+                originalName: req.file.originalname,
+                size: req.file.size
+            }
+        });
+    }
+);
 
 app.get("/api/status", (req, res) => {
     res.json({
