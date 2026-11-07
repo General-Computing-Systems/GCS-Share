@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const os = require("os");
+const QRCode = require('qrcode');
 
 const app = express();
 const PORT = 3000;
@@ -12,6 +13,12 @@ const {
     consumePairing,
 
 } = require("./pairing");
+
+const {
+    createSession,
+    verifySession,
+    removeSession
+} = require("./sessions");
 
 app.use(express.static(path.join(__dirname, "../public")));
 
@@ -52,13 +59,36 @@ app.post("/api/pairing/verify", express.json(), (req, res) => {
         });
     }
 
+    const session = createSession();
+
     res.json({
         success: true,
-        message: "Pairing Successful"
+        message: "Pairing successful",
+        deviceId: session.deviceId,
+        sessionToken: session.sessionToken,
     });
 });
 
+app.post("/api/pairing/qr", async (req, res) => {
+    try {
+        const pairing = createPairing();
 
+        const qrCode = await QRCode.toDataURL(pairing.token);
+
+        res.json({
+            success: true,
+            qrCode,
+            expiresAt: pairing.expiresAt
+        });
+    } catch (error) {
+        console.error("QR generation failed:", error);
+
+        res.status(500).json({
+            success: false,
+            message: "Failed to generate QR code"
+        })
+    }
+});
 function getLocalIPs() {
     const interfaces = os.networkInterfaces();
     const addresses = [];
