@@ -6,5 +6,5 @@ fetch("/api/status")
     })
     .catch(() => {
         document.getElementById("status").textContent =
-            "Could not connect to GCS Share.";
+            "Error: Could not connect to GCS Share, please try again.";
     });

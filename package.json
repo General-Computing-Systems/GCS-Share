@@ -1,7 +1,7 @@
 
 {
   "name": "gcs-share",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "A small, lightweight file sharing utility.",
   "main": "src/server.js",
   "scripts": {
