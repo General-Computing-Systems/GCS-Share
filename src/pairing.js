@@ -5,7 +5,7 @@ const PAIRING_EXPIRY = 2 * 60 * 1000; // 2 minutes in milliseconds
 let currentPairing = null;
 
 function createPairing() {
-    const token = crypto.randomlyBytes(32).toString('hex');
+    const token = crypto.randomBytes(32).toString('hex');
 
     currentPairing = {
         token,
@@ -27,4 +27,16 @@ function consumePairing(token) {
         currentPairing = null;
         return false;
     }
+
+    if (token !== currentPairing.token) {
+        return false;
+    }
+
+    currentPairing = null;
+    return true;
 }
+
+module.exports = {
+    createPairing,
+    consumePairing,
+};

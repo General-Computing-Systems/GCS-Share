@@ -5,6 +5,14 @@ const os = require("os");
 const app = express();
 const PORT = 3000;
 
+app.use(express.json());
+
+const {
+    createPairing,
+    consumePairing,
+
+} = require("./pairing");
+
 app.use(express.static(path.join(__dirname, "../public")));
 
 app.get("/api/status", (req, res) => {
@@ -14,6 +22,42 @@ app.get("/api/status", (req, res) => {
         status: "Online"
     });
 });
+
+app.post("/api/pairing/create", (req, res) => {
+    const pairing = createPairing();
+
+    res.json({
+        success: true,
+        token: pairing.token,
+        expiresAt: pairing.expiresAt
+    })
+})
+
+app.post("/api/pairing/verify", express.json(), (req, res) => {
+    const { token } = req.body;
+
+    if (!token || typeof token !== "string") {
+        return res.status(400).json({
+            success: false,
+            message: "Invalid token"
+        });
+    }
+    
+    const valid = consumePairing(token);
+
+    if (!valid) {
+        return res.status(401).json({
+            success: false,
+            message: "Invalid or expired token"
+        });
+    }
+
+    res.json({
+        success: true,
+        message: "Pairing Successful"
+    });
+});
+
 
 function getLocalIPs() {
     const interfaces = os.networkInterfaces();
