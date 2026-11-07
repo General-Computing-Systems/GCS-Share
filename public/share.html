@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content=""width=device-width, initial-scale=1.0">
-    <title> GCS Share | QR Pairing</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GCS Share | QR Pairing</title>
 
     <style>
         * {
@@ -90,7 +90,7 @@
         <h1>Pair a device</h1>
 
         <p>
-            Scan this QR code with your device you want to connect to GCS Share.
+            Scan this QR code with the device you want to connect to GCS Share.
         </p>
 
         <div id="qr-container">
@@ -98,7 +98,46 @@
             <img id="qr" alt="GCS Share Pairing QR Code">
         </div>
 
-        <button id="generate"></button>Generate QR Code</button>
+        <button id="generate" type="button">Generate QR Code</button>
 
-        <p id="status">Waiting to generate a code...</p>
-        
+        <p id="status" aria-live="polite">Waiting to generate a code...</p>
+
+        <a href="/">Back to home</a>
+    </main>
+
+    <script>
+        const button = document.getElementById("generate");
+        const qr = document.getElementById("qr");
+        const status = document.getElementById("status");
+        const placeholder = document.getElementById("placeholder");
+
+        button.addEventListener("click", async () => {
+            button.disabled = true;
+            status.textContent = "Generating QR code...";
+
+            try {
+                const response = await fetch("/api/pairing/qr", {
+                    method: "POST"
+                });
+
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(data.message || "QR generation failed");
+                }
+
+                qr.src = data.qrCode;
+                qr.style.display = "block";
+                placeholder.style.display = "none";
+
+                status.textContent = "QR code generated! Scan to pair.";
+            } catch (error) {
+                const message = error instanceof Error ? error.message : "An unexpected error occurred.";
+                status.textContent = `Error: ${message}`;
+            } finally {
+                button.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
