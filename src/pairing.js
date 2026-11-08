@@ -1,42 +1,47 @@
 const crypto = require('crypto');
 
-const PAIRING_EXPIRY = 2 * 60 * 1000; // 2 minutes in milliseconds
+const PAIRING_EXPIRY= 2 * 60 * 1000;
 
 let currentPairing = null;
 
-function createPairing() {
+function createPairing(sessionId) {
     const token = crypto.randomBytes(32).toString('hex');
 
     currentPairing = {
         token,
-        expiresAt: Date.now() + PAIRING_EXPIRY,
+        sessionId,
+        expiresAt: Date.now() + PAIRING_EXPIRY
     };
 
     return {
         token,
-        expiresAt: currentPairing.expiresAt,
+        expiresAt: currentPairing.expiresAt
     };
 }
 
 function consumePairing(token) {
     if (!currentPairing) {
-        return false;
+        return null;
     }
 
     if (Date.now() > currentPairing.expiresAt) {
         currentPairing = null;
-        return false;
+        return null;
     }
 
     if (token !== currentPairing.token) {
-        return false;
+        return null;
     }
 
+    const pairing = currentPairing;
     currentPairing = null;
-    return true;
+
+    return {
+        sessionId: pairing.sessionId
+    };
 }
 
 module.exports = {
     createPairing,
-    consumePairing,
+    consumePairing
 };

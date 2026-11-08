@@ -94,7 +94,8 @@
 
         <p id="status" aria-live="polite"></p>
 
-        <a href="/">Back to home</a>
+        <a href="receive.html">Receive files.</a>
+        <a href="/">Back to home.</a>
     </main>
 
     <script>
@@ -117,6 +118,9 @@
                 if (!response.ok || !data.success) {
                     throw new Error(data.message || "QR generation failed");
                 }
+
+                sessionStorage.setItem("gcsDeviceId", data.deviceId);
+                sessionStorage.setItem("gcsSessionToken", data.sessionToken);
 
                 qr.src = data.qrCode;
                 qr.style.display = "block";

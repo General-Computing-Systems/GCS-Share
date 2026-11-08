@@ -108,17 +108,23 @@
     </main>
 
 <script>
-    // ==============================
-    // FRONTEND - TIMER (done)
-    // ==============================
-    let seconds = 120;
+    let expiresAt = null;
+
     setInterval(() => {
-        seconds--;
-        if (seconds < 0) seconds = 0;
+        if (!expiresAt) {
+            updateActionButtons();
+            return;
+        }
+
+        const seconds = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
         const m = Math.floor(seconds / 60);
         const s = String(seconds % 60).padStart(2, '0');
-        document.getElementById('timer').textContent = m + ':' + s;
-    }, 1000);
+
+        const timer = document.getElementById('timer');
+        if (timer) timer.textContent = seconds === 0 ? 'Expired' : m + ':' + s;
+        updateActionButtons();
+
+    }, 250);
 
     // ==============================
     // BACKEND PLACEHOLDER 
@@ -131,33 +137,215 @@
 
     const filesList = document.getElementById('files-list');
     const status = document.getElementById('status');
+    const acceptBtn = document.getElementById('acceptBtn');
+    const declineBtn = document.getElementById('declineBtn');
 
-    document.getElementById('acceptBtn').addEventListener('click', () => {
-        status.textContent = 'Accepting...';
-        // TODO: Replace with real backend call
-        // acceptTransfer(YOUR_HASH_HERE);
+    const deviceId = sessionStorage.getItem('gcsDeviceId');
+    const sessionToken = sessionStorage.getItem('gcsSessionToken');
+
+    let currentTransfer = null;
+    let actionInProgress = false;
+
+    function authHeaders() {
+        return {
+            'x-device-id': deviceId,
+            'x-session-token': sessionToken
+        };
+    }
+
+    function updateActionButtons() {
+        const unavailable = !currentTransfer || !expiresAt || expiresAt - Date.now() <= 0;
+        acceptBtn.disabled = actionInProgress || unavailable;
+        declineBtn.disabled = actionInProgress || unavailable;
+    }
+
+    updateActionButtons();
+
+    document.getElementById('acceptBtn').addEventListener('click', async () => {
+        if (!currentTransfer || actionInProgress) return;
+
+        actionInProgress = true;
+        acceptBtn.disabled = true;
+        declineBtn.disabled = true;
+
+        try {
+            const id = encodeURIComponent(currentTransfer.id);
+
+            const response = await fetch(`/api/transfers/${id}/accept`, {
+                method: 'POST',
+                headers: authHeaders()
+            });
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || 'Could not accept transfer.');
+            }
+
+            status.textContent = 'Downloading...';
+
+            const fileId = encodeURIComponent(data.file.id);
+            const downloadResponse = await fetch(`/api/files/${fileId}`, {
+                headers: authHeaders()
+            });
+
+            if (!downloadResponse.ok) {
+                throw new Error('Download failed.');
+            }
+
+            const blob = await downloadResponse.blob();
+            const url = URL.createObjectURL(blob);
+
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = data.file.name;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+            const completionResponse = await fetch(`/api/transfers/${id}/complete`, {
+                method: 'POST',
+                headers: authHeaders()
+            });
+            const completionData = await completionResponse.json();
+
+            if (!completionResponse.ok || !completionData.success) {
+                throw new Error(completionData.message || 'Could not complete transfer.');
+            }
+
+            status.textContent = 'File downloaded successfully!';
+            filesList.textContent = 'Transfer complete.';
+            currentTransfer = null;
+        } catch (error) {
+            status.textContent = error.message;
+        } finally {
+            actionInProgress = false;
+            updateActionButtons();
+        }
     });
 
-    document.getElementById('declineBtn').addEventListener('click', () => {
-        status.textContent = 'Declined.';
-        filesList.innerHTML = '<p>Transfer declined.</p>';
-        // TODO: Replace with real backend call
-        // declineTransfer(YOUR_HASH_HERE);
+    document.getElementById('declineBtn').addEventListener('click', async () => {
+        if (!currentTransfer || actionInProgress) return;
+
+        actionInProgress = true;
+        acceptBtn.disabled = true;
+        declineBtn.disabled = true;
+
+        try {
+            const id = encodeURIComponent(currentTransfer.id);
+
+            const response = await fetch(`/api/transfers/${id}/decline`, {
+                method: 'POST',
+                headers: authHeaders()
+            });
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || 'Could not decline transfer');
+            }
+
+            currentTransfer = null;
+            filesList.textContent = 'Transfer declined.';
+            status.textContent = 'The file has been discarded.';
+        } catch (error) {
+            status.textContent = error.message;
+        } finally {
+            actionInProgress = false;
+            updateActionButtons();
+        }
     });
 
     // FRONTEND - Backend calls this when sender connects
     // senderName = "Alex" , files = [{ name, size }]
-    function showIncomingTransfer(senderName, files) {
-        document.getElementById('senderName').textContent = senderName + ' wants to send you';
-        document.getElementById('senderAvatar').textContent = senderName[0].toUpperCase();
-        document.getElementById('senderSub').innerHTML = files.length + ' file(s) • Expires in <span id="timer">2:00</span>';
+    function showIncomingTransfer(transfer) {
+        currentTransfer = transfer;
 
-        filesList.innerHTML = files.map(f => `
-            <div class="file-preview">
-                <div><span>${f.name}</span><small>${f.size}</small></div>
-                <span>📄</span>
-            </div>
-        `).join('');
+        const name = transfer.senderName || 'Connected device';
+
+        document.getElementById('senderName').textContent =
+            name + ' wants to send you';
+
+        document.getElementById('senderAvatar').textContent =
+            name.charAt(0).toUpperCase();
+
+        document.getElementById('senderSub').textContent =
+            '1 file * Expires in ';
+
+        const timer = document.createElement('span');
+        timer.id = 'timer';
+        timer.textContent = '2:00';
+        document.getElementById('senderSub').appendChild(timer);
+
+        filesList.replaceChildren();
+
+        const preview = document.createElement('div');
+        preview.className = 'file-preview';
+
+        const details = document.createElement('div');
+
+        const filename = document.createElement('span');
+        filename.textContent = transfer.file.name;
+
+        const size = document.createElement('small');
+        size.textContent = formatSize(transfer.file.size);
+
+        details.append(filename, size);
+
+        const icon = document.createElement('span');
+        icon.textContent = '📄';
+
+        preview.append(details, icon);
+        filesList.appendChild(preview);
+
+        document.querySelector('.btn-row').style.display = 'flex';
+
+        expiresAt = transfer.expiresAt;
+        updateActionButtons();
+    }
+
+    function formatSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+    }
+
+    async function checkForTransfers() {
+        if (!deviceId || !sessionToken || actionInProgress) return;
+
+        try {
+            const response = await fetch('/api/transfers/pending', {
+                headers: authHeaders()
+            });
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || 'Could not check transfers.');
+            }
+
+            if (!data.transfer) {
+                return;
+            }
+
+            if (currentTransfer && currentTransfer.id === data.transfer.id) {
+                return;
+            }
+
+            showIncomingTransfer(data.transfer);
+
+        } catch (error) {
+            status.textContent = error.message;
+        }
+    }
+
+    if (deviceId && sessionToken) {
+        checkForTransfers();
+        setInterval(checkForTransfers, 1500);
+    } else {
+        status.textContent = 'Please pair your device first.';
     }
 
     // FRONTEND - Backend calls this after Accept, when files are ready to download

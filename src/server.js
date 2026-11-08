@@ -8,6 +8,8 @@ const multer = require("multer")
 
 const app = express();
 const PORT = 3000;
+const TRANSFER_EXPIRY = 2 * 60 * 1000;
+const transfers = new Map();
 
 const uploadDir = path.join(__dirname, "../uploads");
 
@@ -49,7 +51,10 @@ const {
 
 const {
     createSession,
+    joinSession,
     verifySession,
+    getOtherDevice,
+    getSharedSessionId,
     removeSession
 } = require("./sessions");
 
@@ -71,8 +76,37 @@ function authenticateDevice(req, res, next) {
         });
     }
 
+    req.deviceId = deviceId;
     next();
 }
+
+function removeUploadedFile(filename) {
+    return fs.promises.unlink(path.join(uploadDir, filename)).catch(error => {
+        if (error.code !== "ENOENT") throw error;
+    });
+}
+
+function expireTransfer(transfer) {
+    if (transfer.activeDownloads > 0) {
+        transfer.expired = true;
+        return;
+    }
+
+    transfers.delete(transfer.id);
+
+    removeUploadedFile(transfer.file.id).catch(error => {
+        console.error("Expired transfer cleanup failed:", error);
+    });
+}
+
+setInterval(() => {
+    const now = Date.now();
+    for (const transfer of transfers.values()) {
+        if (now >= transfer.expiresAt) {
+            expireTransfer(transfer);
+        }
+    }
+}, 1000).unref();
 
 app.use(express.static(path.join(__dirname, "../public")));
 
@@ -80,13 +114,38 @@ app.post(
     "/api/upload",
     authenticateDevice,
     upload.single("file"),
-    (req, res) => {
+    async (req, res) => {
         if (!req.file) {
             return res.status(400).json({
                 success: false,
                 message: "No file provided"
             });
         }
+
+        const recipientDeviceId = getOtherDevice(req.deviceId);
+        if (!recipientDeviceId) {
+            await removeUploadedFile(req.file.filename);
+            return res.status(409).json({
+                success: false,
+                message: "No paired recipient is available"
+            });
+        }
+
+        const transfer = {
+            id: crypto.randomUUID(),
+            senderDeviceId: req.deviceId,
+            recipientDeviceId,
+            file: {
+                id: req.file.filename,
+                name: req.file.originalname,
+                size: req.file.size
+            },
+            status: "pending",
+            activeDownloads: 0,
+            expired: false,
+            expiresAt: Date.now() + TRANSFER_EXPIRY
+        };
+        transfers.set(transfer.id, transfer);
 
         res.json({
             success: true,
@@ -95,10 +154,111 @@ app.post(
                 id: req.file.filename,
                 originalName: req.file.originalname,
                 size: req.file.size
+            },
+            transfer: {
+                id: transfer.id,
+                expiresAt: transfer.expiresAt
             }
         });
     }
 );
+
+app.get("/api/transfers/pending", authenticateDevice, (req, res) => {
+    const now = Date.now();
+    for (const transfer of transfers.values()) {
+        if (now >= transfer.expiresAt) {
+            expireTransfer(transfer);
+        }
+    }
+
+    const transfer = [...transfers.values()].find(item =>
+        item.recipientDeviceId === req.deviceId && item.status === "pending"
+    );
+
+    res.json({
+        success: true,
+        transfer: transfer ? {
+            id: transfer.id,
+            senderName: "Connected device",
+            file: transfer.file,
+            expiresAt: transfer.expiresAt
+        } : null
+    });
+});
+
+app.post("/api/transfers/:id/accept", authenticateDevice, (req, res) => {
+    const transfer = transfers.get(req.params.id);
+    if (!transfer || transfer.recipientDeviceId !== req.deviceId) {
+        return res.status(404).json({ success: false, message: "Transfer not found" });
+    }
+
+    if (Date.now() >= transfer.expiresAt) {
+        expireTransfer(transfer);
+        return res.status(410).json({ success: false, message: "Transfer expired" });
+    }
+
+    if (transfer.status === "pending") {
+        transfer.status = "accepted";
+        transfer.acceptedAt = Date.now();
+    } else if (transfer.status !== "accepted") {
+        return res.status(409).json({ success: false, message: "Transfer is no longer pending" });
+    }
+
+    res.json({
+        success: true,
+        file: { id: transfer.file.id, name: transfer.file.name }
+    });
+});
+
+app.post("/api/transfers/:id/decline", authenticateDevice, (req, res) => {
+    const transfer = transfers.get(req.params.id);
+    if (!transfer || transfer.recipientDeviceId !== req.deviceId) {
+        return res.status(404).json({ success: false, message: "Transfer not found" });
+    }
+
+    if (Date.now() >= transfer.expiresAt) {
+        expireTransfer(transfer);
+        return res.status(410).json({ success: false, message: "Transfer expired" });
+    }
+
+    if (transfer.status !== "pending") {
+        return res.status(409).json({ success: false, message: "Transfer is no longer pending" });
+    }
+
+    transfer.status = "declined";
+    transfer.declinedAt = Date.now();
+    res.json({ success: true });
+});
+
+app.post("/api/transfers/:id/complete", authenticateDevice, async (req, res) => {
+    const transfer = transfers.get(req.params.id);
+    if (!transfer || transfer.recipientDeviceId !== req.deviceId) {
+        return res.status(404).json({ success: false, message: "Transfer not found" });
+    }
+
+    if (Date.now() >= transfer.expiresAt) {
+        expireTransfer(transfer);
+        return res.status(410).json({ success: false, message: "Transfer expired" });
+    }
+
+    if (transfer.status === "completed") {
+        return res.json({ success: true });
+    }
+    if (transfer.status !== "accepted") {
+        return res.status(409).json({ success: false, message: "Transfer has not been accepted" });
+    }
+
+    try {
+        await removeUploadedFile(transfer.file.id);
+    } catch (error) {
+        console.error("Completed transfer cleanup failed:", error);
+        return res.status(500).json({ success: false, message: "Could not clean up transferred file" });
+    }
+
+    transfer.status = "completed";
+    transfer.completedAt = Date.now();
+    res.json({ success: true });
+});
 
 app.get("/api/files/:id", authenticateDevice, (req, res) => {
     const filename = req.params.id;
@@ -108,6 +268,23 @@ app.get("/api/files/:id", authenticateDevice, (req, res) => {
             success: false,
             message: "Invalid filename"
         });
+    }
+
+    const transfer = [...transfers.values()].find(item => item.file.id === filename);
+    if (!transfer || transfer.recipientDeviceId !== req.deviceId) {
+        return res.status(404).json({
+            success: false,
+            message: "Accepted transfer file not found"
+        });
+    }
+
+    if (Date.now() >= transfer.expiresAt) {
+        expireTransfer(transfer);
+        return res.status(410).json({ success: false, message: "Transfer expired" });
+    }
+
+    if (transfer.status !== "accepted") {
+        return res.status(409).json({ success: false, message: "Transfer has not been accepted" });
     }
 
     const filePath = path.resolve(uploadDir, filename);
@@ -127,9 +304,18 @@ app.get("/api/files/:id", authenticateDevice, (req, res) => {
             });
         }
 
-        const originalName = filename.slice(37);
+        transfer.activeDownloads++;
+        res.download(filePath, transfer.file.name, error => {
+            transfer.activeDownloads--;
 
-        res.download(filePath, originalName);
+            if (transfer.activeDownloads === 0 && transfer.expired) {
+                expireTransfer(transfer);
+            }
+
+            if (error) {
+                console.error("File download failed:", error);
+            }
+        });
     });
 });
 
@@ -169,16 +355,19 @@ app.get("/api/devices/me", (req, res) => {
 });
 
 app.post("/api/pairing/create", (req, res) => {
-    const pairing = createPairing();
+    const session = createSession();
+    const pairing = createPairing(session.sessionId);
 
     res.json({
         success: true,
         token: pairing.token,
-        expiresAt: pairing.expiresAt
-    })
-})
+        expiresAt: pairing.expiresAt,
+        deviceId: session.deviceId,
+        sessionToken: session.sessionToken
+    });
+});
 
-app.post("/api/pairing/verify", express.json(), (req, res) => {
+app.post("/api/pairing/verify", (req, res) => {
     const { token } = req.body;
 
     if (!token || typeof token !== "string") {
@@ -187,29 +376,37 @@ app.post("/api/pairing/verify", express.json(), (req, res) => {
             message: "Invalid token"
         });
     }
-    
-    const valid = consumePairing(token);
 
-    if (!valid) {
+    const pairing = consumePairing(token);
+
+    if (!pairing) {
         return res.status(401).json({
             success: false,
             message: "Invalid or expired token"
         });
     }
 
-    const session = createSession();
+    try {
+        const session = joinSession(pairing.sessionId);
 
-    res.json({
-        success: true,
-        message: "Pairing successful",
-        deviceId: session.deviceId,
-        sessionToken: session.sessionToken,
-    });
+        res.json({
+            success: true,
+            message: "Pairing successful",
+            deviceId: session.deviceId,
+            sessionToken: session.sessionToken
+        }); 
+    } catch (error) {
+        res.status(400).json({
+            success: false,
+            message: "Unable to join this session"
+        });
+    }
 });
 
 app.post("/api/pairing/qr", async (req, res) => {
     try {
-        const pairing = createPairing();
+        const session = createSession();
+        const pairing = createPairing(session.sessionId);
 
         const connectionUrl =
             `${req.protocol}://${req.get("host")}/connect.html?token=${encodeURIComponent(pairing.token)}`;
@@ -219,17 +416,20 @@ app.post("/api/pairing/qr", async (req, res) => {
         res.json({
             success: true,
             qrCode,
-            expiresAt: pairing.expiresAt
+            expiresAt: pairing.expiresAt,
+            deviceId: session.deviceId,
+            sessionToken: session.sessionToken
         });
     } catch (error) {
         console.error("QR generation failed:", error);
 
         res.status(500).json({
             success: false,
-            message: "Failed to generate QR code"
+            message: "Failed to generate QR code."
         })
     }
-});
+})
+
 function getLocalIPs() {
     const interfaces = os.networkInterfaces();
     const addresses = [];
