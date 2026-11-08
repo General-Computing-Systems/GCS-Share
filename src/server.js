@@ -100,6 +100,39 @@ app.post(
     }
 );
 
+app.get("/api/files/:id", authenticateDevice, (req, res) => {
+    const filename = req.params.id;
+
+    if (path.basename(filename) !== filename) {
+        return res.status(400).json({
+            success: false,
+            message: "Invalid filename"
+        });
+    }
+
+    const filePath = path.resolve(uploadDir, filename);
+
+    if (!filePath.startsWith(uploadDir + path.sep)) {
+        return res.status(400).json({
+            success: false,
+            message: "Invalid file path"
+        });
+    }
+
+    fs.stat(filePath, (err, stats) => {
+        if (err || !stats.isFile()) {
+            return res.status(404).json({
+                success: false,
+                message: "File not found"
+            });
+        }
+
+        const originalName = filename.slice(37);
+
+        res.download(filePath, originalName);
+    });
+});
+
 app.get("/api/status", (req, res) => {
     res.json({
         name: "GCS Share",
