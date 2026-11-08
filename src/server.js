@@ -408,9 +408,16 @@ app.post("/api/pairing/qr", async (req, res) => {
         const session = createSession();
         const pairing = createPairing(session.sessionId);
 
-        const connectionUrl =
-            `${req.protocol}://${req.get("host")}/connect.html?token=${encodeURIComponent(pairing.token)}`;
+        const localIP = getLocalIPs().find(ip =>
+            ip.interface === "Ethernet"
+        )?.address
         
+        if (!localIP) {
+            throw new Error("No local network IP found");
+        }
+
+        const connectionUrl =
+            `http://${localIP}:${PORT}/connect.html?token=${encodeURIComponent(pairing.token)}`;
         const qrCode = await QRCode.toDataURL(connectionUrl);
 
         res.json({
