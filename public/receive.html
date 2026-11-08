@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GCS Share - Incoming Transfer</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+            background: #0b1020;
+            color: #eef2ff;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            background:
+                radial-gradient(ellipse at 20% 15%, #23315b 0, transparent 38%),
+                radial-gradient(ellipse at 85% 85%, #20204a 0, transparent 34%),
+                #0b1020;
+        }
+        main {
+            width: min(100%, 720px);
+            padding: clamp(32px, 7vw, 64px);
+            border: 1px solid rgb(255 255 255 / 10%);
+            border-radius: 24px;
+            background: rgb(17 24 43 / 78%);
+            box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
+            backdrop-filter: blur(12px);
+            text-align: center;
+        }
+        h1 {
+            margin: 0 0 8px;
+            font-size: clamp(2.4rem, 7vw, 4rem);
+            line-height: 1.05;
+            letter-spacing: -0.06em;
+            background: linear-gradient(100deg, #fff 20%, #a5b4fc 75%, #67e8f9);
+            background-clip: text;
+            -webkit-background-clip: text;
+            color: transparent;
+        }
+        p { max-width: 55ch; margin: 0 auto 12px; color: #aab4ca; font-size: 1rem; line-height: 1.8; }
+        hr { border: none; border-top: 1px solid rgb(255 255 255 / 10%); margin: 24px 0; }
+
+        .avatar {
+            width: 72px; height: 72px;
+            margin: 0 auto 16px;
+            border-radius: 50%;
+            display: grid; place-items: center;
+            font-size: 2rem; font-weight: 700;
+            background: linear-gradient(135deg, #a5b4fc, #67e8f9);
+            color: #0b1020;
+        }
+        .sender-name { color: #fff; font-size: 1.25rem; font-weight: 700; margin: 0; }
+        .sender-sub { color: #aab4ca; margin-top: 4px; }
+
+        .file-preview {
+            text-align: left;
+            padding: 14px 16px;
+            margin-top: 12px;
+            border: 1px solid rgb(255 255 255 / 10%);
+            border-radius: 12px;
+            background: rgb(255 255 255 / 4%);
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .file-preview span { color: #eef2ff; }
+        .file-preview small { color: #aab4ca; display: block; }
+
+        .btn-row { display: flex; gap: 12px; justify-content: center; margin-top: 24px; }
+        .cta {
+            padding: 14px 28px; border-radius: 999px;
+            background: #fff; color: #0b1020;
+            font-weight: 700; border: none; cursor: pointer; font-family: inherit;
+        }
+        .decline {
+            padding: 14px 28px; border-radius: 999px;
+            background: transparent; color: #fda4af;
+            border: 1px solid rgb(255 255 255 / 20%);
+            font-weight: 700; cursor: pointer; font-family: inherit;
+        }
+        #timer { color: #fda4af; font-weight: 700; }
+        #status { margin-top: 16px; color: #67e8f9; min-height: 24px; }
+    </style>
+</head>
+<body>
+    <main>
+        <div class="avatar" id="senderAvatar">?</div>
+        <p class="sender-name" id="senderName">Incoming Transfer</p>
+        <p class="sender-sub" id="senderSub">Wants to send you files • Expires in <span id="timer">2:00</span></p>
+
+        <hr>
+
+        <!-- [FRONTEND] File preview list - backend fills this -->
+        <div id="files-list">
+            <p>Waiting for sender...</p>
+        </div>
+
+        <div class="btn-row">
+            <button class="decline" id="declineBtn">Decline</button>
+            <button class="cta" id="acceptBtn">Accept</button>
+        </div>
+
+        <p id="status"></p>
+    </main>
+
+<script>
+    // ==============================
+    // FRONTEND - TIMER (done)
+    // ==============================
+    let seconds = 120;
+    setInterval(() => {
+        seconds--;
+        if (seconds < 0) seconds = 0;
+        const m = Math.floor(seconds / 60);
+        const s = String(seconds % 60).padStart(2, '0');
+        document.getElementById('timer').textContent = m + ':' + s;
+    }, 1000);
+
+    // ==============================
+    // BACKEND PLACEHOLDER 
+    // ==============================
+    // TODO FOR BACKEND:
+    // 1. When sender connects, get sender name + file list + hash
+    // 2. Call showIncomingTransfer(senderName, files) below
+    // 3. On Accept -> start download for THAT hash only, then call showFiles()
+    // 4. On Decline -> cancel session / delete uploads for THAT hash
+
+    const filesList = document.getElementById('files-list');
+    const status = document.getElementById('status');
+
+    document.getElementById('acceptBtn').addEventListener('click', () => {
+        status.textContent = 'Accepting...';
+        // TODO: Replace with real backend call
+        // acceptTransfer(YOUR_HASH_HERE);
+    });
+
+    document.getElementById('declineBtn').addEventListener('click', () => {
+        status.textContent = 'Declined.';
+        filesList.innerHTML = '<p>Transfer declined.</p>';
+        // TODO: Replace with real backend call
+        // declineTransfer(YOUR_HASH_HERE);
+    });
+
+    // FRONTEND - Backend calls this when sender connects
+    // senderName = "Alex" , files = [{ name, size }]
+    function showIncomingTransfer(senderName, files) {
+        document.getElementById('senderName').textContent = senderName + ' wants to send you';
+        document.getElementById('senderAvatar').textContent = senderName[0].toUpperCase();
+        document.getElementById('senderSub').innerHTML = files.length + ' file(s) • Expires in <span id="timer">2:00</span>';
+
+        filesList.innerHTML = files.map(f => `
+            <div class="file-preview">
+                <div><span>${f.name}</span><small>${f.size}</small></div>
+                <span>📄</span>
+            </div>
+        `).join('');
+    }
+
+    // FRONTEND - Backend calls this after Accept, when files are ready to download
+    // files = [{ name, size, url }]
+    function showFiles(files) {
+        filesList.innerHTML = files.map(f => `
+            <div class="file-preview">
+                <div><span>${f.name}</span><small>${f.size}</small></div>
+                <a href="${f.url}" style="color:#67e8f9; font-weight:700; text-decoration:none;">Download ↓</a>
+            </div>
+        `).join('');
+        status.textContent = 'Ready to download.';
+    }
+
+    // PLACEHOLDER DEMO - remove when backend connected
+    // showIncomingTransfer("Alex", [
+    //   { name: "photo.jpg", size: "2.4 MB" },
+    //   { name: "notes.pdf", size: "1.1 MB" }
+    // ]);
+</script>
+</body>
+</html>
