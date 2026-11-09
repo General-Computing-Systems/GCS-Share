@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GCS Share - Incoming Transfer</title>
+    <title>GCS Share | Send & Receive</title>
     <style>
         :root {
             color-scheme: dark;
@@ -11,7 +11,11 @@
             background: #0b1020;
             color: #eef2ff;
         }
-        * { box-sizing: border-box; }
+
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             margin: 0;
             min-height: 100vh;
@@ -23,6 +27,7 @@
                 radial-gradient(ellipse at 85% 85%, #20204a 0, transparent 34%),
                 #0b1020;
         }
+
         main {
             width: min(100%, 720px);
             padding: clamp(32px, 7vw, 64px);
@@ -33,6 +38,7 @@
             backdrop-filter: blur(12px);
             text-align: center;
         }
+
         h1 {
             margin: 0 0 8px;
             font-size: clamp(2.4rem, 7vw, 4rem);
@@ -43,20 +49,45 @@
             -webkit-background-clip: text;
             color: transparent;
         }
-        p { max-width: 55ch; margin: 0 auto 12px; color: #aab4ca; font-size: 1rem; line-height: 1.8; }
-        hr { border: none; border-top: 1px solid rgb(255 255 255 / 10%); margin: 24px 0; }
+
+        p {
+            max-width: 55ch;
+            margin: 0 auto 12px;
+            color: #aab4ca;
+            font-size: 1rem;
+            line-height: 1.8;
+        }
+
+        hr {
+            border: none;
+            border-top: 1px solid rgb(255 255 255 / 10%);
+            margin: 24px 0;
+        }
 
         .avatar {
-            width: 72px; height: 72px;
+            width: 72px;
+            height: 72px;
             margin: 0 auto 16px;
             border-radius: 50%;
-            display: grid; place-items: center;
-            font-size: 2rem; font-weight: 700;
+            display: grid;
+            place-items: center;
+            font-size: 2rem;
+            font-weight: 700;
             background: linear-gradient(135deg, #a5b4fc, #67e8f9);
             color: #0b1020;
         }
-        .sender-name { color: #fff; font-size: 1.25rem; font-weight: 700; margin: 0; }
-        .sender-sub { color: #aab4ca; margin-top: 4px; }
+
+        .sender-name {
+            color: #fff;
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin: 0;
+        }
+
+        .sender-sub {
+            color: #aab4ca;
+            margin-top: 4px;
+        }
 
         .file-preview {
             text-align: left;
@@ -65,22 +96,47 @@
             border: 1px solid rgb(255 255 255 / 10%);
             border-radius: 12px;
             background: rgb(255 255 255 / 4%);
-            display: flex; justify-content: space-between; align-items: center;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
-        .file-preview span { color: #eef2ff; }
-        .file-preview small { color: #aab4ca; display: block; }
 
-        .btn-row { display: flex; gap: 12px; justify-content: center; margin-top: 24px; }
-        .cta {
-            padding: 14px 28px; border-radius: 999px;
-            background: #fff; color: #0b1020;
-            font-weight: 700; border: none; cursor: pointer; font-family: inherit;
+        .file-preview span {
+            color: #eef2ff;
         }
+
+        .file-preview small {
+            color: #aab4ca;
+            display: block;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            margin-top: 24px;
+        }
+
+        .cta {
+            padding: 14px 28px;
+            border-radius: 999px;
+            background: #fff;
+            color: #0b1020;
+            font-weight: 700;
+            border: none;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
         .decline {
-            padding: 14px 28px; border-radius: 999px;
-            background: transparent; color: #fda4af;
+            padding: 14px 28px;
+            border-radius: 999px;
+            background: transparent;
+            color: #fda4af;
             border: 1px solid rgb(255 255 255 / 20%);
-            font-weight: 700; cursor: pointer; font-family: inherit;
+            font-weight: 700;
+            cursor: pointer;
+            font-family: inherit;
         }
 
         .send-row {
@@ -91,12 +147,117 @@
             font-family: inherit;
             font-size: 1rem;
         }
-        #timer { color: #fda4af; font-weight: 700; }
-        #status { margin-top: 16px; color: #67e8f9; min-height: 24px; }
+
+        #timer {
+            color: #fda4af;
+            font-weight: 700;
+        }
+
+        #status {
+            margin-top: 16px;
+            color: #67e8f9;
+            min-height: 24px;
+        }
+
+        #senderAvatar,
+        #senderName,
+        #senderSub,
+        #files-list,
+        .btn-row {
+            display: none;
+        }
+
+        .qr-panel {
+            padding: 24px;
+            border: 1px solid rgb(255 255 255 / 10%);
+            border-radius: 18px;
+            background: rgb(255 255 255 / 4%);
+            margin-bottom: 24px;
+        }
+
+        .qr-icon {
+            font-size: 3rem;
+            color: #a5b4fc;
+            margin-bottom: 12px;
+        }
+
+        .qr-panel h2 {
+            margin: 0 0 8px;
+            color: #fff;
+        }
+
+        .qr-panel p {
+            font-size: 0.9rem;
+        }
+
+        #qr-reader {
+            width: 100%;
+            min-height: 260px;
+            max-width: 400px;
+            margin: 20px auto;
+            overflow: hidden;
+            display: grid;
+            place-items: center;
+            border-radius: 12px;
+            border: 1px solid rgb(255 255 255 / 12%);
+            background: rgb(0 0 0 / 25%);
+        }
+
+        #qr-reader:empty::before {
+            content: "Camera preview will appear here";
+            color: #aab4ca;
+            font-size: 0.9rem;
+        }
+
+        #scannerStatus {
+            margin-top: 12px;
+            min-height: 20px;
+            font-size: 0.85rem;
+        }
+
+        #qr-reader video {
+            display: block;
+            width: 100% !important;
+            min-height: 260px;
+            object-fit: cover;
+            border-radius: 12px;
+        }
+
+        #scanner-panel {
+            padding: 24px;
+            border: 1px solid rgb(255 255 255 / 10%);
+            border-radius: 16px;
+            background: rgb(255 255 255 / 3%);
+        }
+
+        #scanner-panel h2 {
+            margin: 0 0 8px;
+            color: #fff;
+            font-size: 1.4rem;
+        }
+
+        #startScannerBtn {
+            margin-top: 8px;
+        }
+
+        #scanner-panel button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
     <main>
+        <div id="scanner-panel">
+            <h2>Connect a device</h2>
+            <p>Scan a GCS Share QR code to connect to another device.</p>
+
+            <div id="qr-reader"></div>
+
+            <button class="cta" id="startScannerBtn">Open camera</button>
+            <p id="scannerStatus">Your camera will be requested when you start scanning.</p>
+        </div>
+
         <div class="avatar" id="senderAvatar">?</div>
         <p class="sender-name" id="senderName">Incoming Transfer</p>
         <p class="sender-sub" id="senderSub">Wants to send you files • Expires in <span id="timer">2:00</span></p>
@@ -108,7 +269,7 @@
             <button class="cta" id="sendBtn">Send Files</button>
         </div>
 
-        <!-- Incoming transfers-->
+        <!-- Incoming transfers -->
 
         <div id="files-list">
             <p>Waiting for sender...</p>
@@ -121,6 +282,8 @@
 
         <p id="status"></p>
     </main>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 
 <script>
     let expiresAt = null;
@@ -136,13 +299,15 @@
         const s = String(seconds % 60).padStart(2, '0');
 
         const timer = document.getElementById('timer');
-        if (timer) timer.textContent = seconds === 0 ? 'Expired' : m + ':' + s;
-        updateActionButtons();
+        if (timer) {
+            timer.textContent = seconds === 0 ? 'Expired' : m + ':' + s;
+        }
 
+        updateActionButtons();
     }, 250);
 
     // ==============================
-    // BACKEND PLACEHOLDER 
+    // BACKEND PLACEHOLDER
     // ==============================
     // TODO FOR BACKEND:
     // 1. When sender connects, get sender name + file list + hash
@@ -155,9 +320,93 @@
     const acceptBtn = document.getElementById('acceptBtn');
     const declineBtn = document.getElementById('declineBtn');
 
+    const scannerPanel = document.getElementById('scanner-panel');
+    const scannerStatus = document.getElementById('scannerStatus');
+    const startScannerBtn = document.getElementById('startScannerBtn');
+
+    let qrScanner = null;
+    let qrHandled = false;
+
+    if (!window.isSecureContext) {
+        startScannerBtn.disabled = true;
+        scannerStatus.textContent =
+            'Camera access requires HTTPS, or use localhost on this device.';
+    } else if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        startScannerBtn.disabled = true;
+        scannerStatus.textContent = 'This browser does not support camera access.';
+    }
+
+    startScannerBtn.addEventListener('click', async () => {
+        if (typeof Html5Qrcode === 'undefined') {
+            scannerStatus.textContent = 'The QR scanner could not load. Check your internet connection and reload.';
+            return;
+        }
+
+        startScannerBtn.disabled = true;
+        scannerStatus.textContent = 'Requesting camera access...';
+
+        try {
+            qrScanner = new Html5Qrcode('qr-reader');
+            const cameras = await Html5Qrcode.getCameras();
+
+            if (cameras.length === 0) {
+                throw new Error('No camera was found on this device.');
+            }
+
+            const camera =
+                cameras.find(({ label }) => /back|rear|environment/i.test(label)) ||
+                cameras[0];
+
+            await qrScanner.start(
+                camera.id,
+                {
+                    fps: 10,
+                    qrbox: (viewfinderWidth, viewfinderHeight) => {
+                        const size = Math.min(240, viewfinderWidth, viewfinderHeight);
+                        return { width: size, height: size };
+                    }
+                },
+                async (decodedText) => {
+                    if (qrHandled) return;
+
+                    let scannedURL;
+
+                    try {
+                        scannedURL = new URL(decodedText);
+
+                        if (!['http:', 'https:'].includes(scannedURL.protocol)) {
+                            throw new Error('Invalid protocol');
+                        }
+                    } catch {
+                        scannerStatus.textContent = 'That QR code does not contain a valid web link.';
+                        return;
+                    }
+
+                    qrHandled = true;
+                    scannerStatus.textContent = 'QR code found! Connecting...';
+
+                    try {
+                        await qrScanner.stop();
+                    } catch (error) {
+                        console.warn('Could not stop scanner:', error);
+                    }
+
+                    window.location.href = scannedURL.href;
+                },
+                () => {}
+            );
+
+            startScannerBtn.textContent = 'Camera active';
+            scannerStatus.textContent = 'Point your camera at a GCS Share QR code.';
+        } catch (error) {
+            scannerStatus.textContent =
+                'Could not start camera: ' + (error.message || String(error));
+            startScannerBtn.disabled = false;
+        }
+    });
+
     let deviceId = sessionStorage.getItem('gcsDeviceId');
     let sessionToken = sessionStorage.getItem('gcsSessionToken');
-
     let currentTransfer = null;
     let actionInProgress = false;
 
@@ -181,7 +430,7 @@
     });
 
     fileInput.addEventListener('change', async () => {
-        const file = fileInput.files [0];
+        const file = fileInput.files[0];
 
         if (!file) return;
 
@@ -245,8 +494,7 @@
                 throw new Error(completeData.message || 'Upload completion failed');
             }
 
-            status.textContent =
-                `Successfully sent ${completeData.file.originalName || file.name}!`;
+            status.textContent = `Successfully sent ${completeData.file.originalName || file.name}!`;
         } catch (error) {
             status.textContent = `Upload failed: ${error.message}`;
         } finally {
@@ -290,11 +538,11 @@
             sessionStorage.setItem('gcsDeviceId', deviceId);
             sessionStorage.setItem('gcsSessionToken', sessionToken);
 
-            history.replaceState({}, document.title, '/receive.html')
+            history.replaceState({}, document.title, '/receive.html');
 
+            scannerPanel.style.display = 'none';
             status.textContent = 'Successfully connected!';
             return true;
-
         } catch (error) {
             status.textContent = 'Connection failed: ' + error.message;
             return false;
@@ -332,7 +580,6 @@
             });
 
             console.log('Download response:', downloadResponse.status);
-
 
             if (!downloadResponse.ok) {
                 throw new Error('Download failed.');
@@ -411,6 +658,11 @@
     function showIncomingTransfer(transfer) {
         currentTransfer = transfer;
 
+        document.getElementById('senderAvatar').style.display = 'grid';
+        document.getElementById('senderName').style.display = 'block';
+        document.getElementById('senderSub').style.display = 'block';
+        filesList.style.display = 'block';
+
         const name = transfer.senderName || 'Connected device';
 
         document.getElementById('senderName').textContent =
@@ -457,7 +709,7 @@
     function formatSize(bytes) {
         if (bytes < 1024) return bytes + ' B';
         if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
 
     async function checkForTransfers() {
@@ -483,7 +735,6 @@
             }
 
             showIncomingTransfer(data.transfer);
-
         } catch (error) {
             status.textContent = error.message;
         }
@@ -495,6 +746,7 @@
         if (!connected) return;
 
         if (deviceId && sessionToken) {
+            scannerPanel.style.display = 'none';
             status.textContent = 'Connected. Ready to share files.';
             checkForTransfers();
             setInterval(checkForTransfers, 1500);
