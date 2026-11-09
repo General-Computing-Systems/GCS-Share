@@ -3,3 +3,17 @@
 *.code-workspace
 
 .env
+
+# Dependencies
+node_modules/
+
+# Temporary uploaded files
+uploads/
+
+# Vercel
+.vercel/
+
+# Environment variables
+.env
+.env.*
+!.env.example

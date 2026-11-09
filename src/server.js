@@ -100,22 +100,6 @@ async function expireTransfer(transfer) {
     `;
 }
 
-setInterval(async () => {
-    try {
-        const expiredTransfers = await sql`
-            SELECT id, file_id
-            FROM transfers
-            WHERE expires_at <= NOW()
-        `;
-
-        for (const transfer of expiredTransfers) {
-            await expireTransfer(transfer);
-        }
-    } catch (error) {
-        console.error("Automatic transfer cleanup failed:", error);
-    }
-}, 1000).unref();
-
 app.use(express.static(path.join(__dirname, "../public")));
 
 app.post("/api/upload-url", authenticateDevice, async (req, res) => {
@@ -705,16 +689,15 @@ app.post("/api/pairing/qr", async (req, res) => {
         const session = await createSession();
         const pairing = await createPairing(session.sessionId);
 
-        const localIP = getLocalIPs().find(ip =>
-            ip.interface === "Ethernet"
-        )?.address
-        
-        if (!localIP) {
-            throw new Error("No local network IP found");
-        }
+        const appUrl = process.env.APP_URL
+            ? process.env.APP_URL.replace(/\/$/, '')
+            : process.env.VERCEL_URL
+                ? `https://${process.env.VERCEL_URL}`
+                : `http://${getLocalIPs().find(ip => ip.interface === "Ethernet")?.address || "localhost"}:${PORT}`;
 
         const connectionUrl =
-            `http://${localIP}:${PORT}/receive.html?token=${encodeURIComponent(pairing.token)}`;
+            `${appUrl}/receive.html?token=${encodeURIComponent(pairing.token)}`;
+
         const qrCode = await QRCode.toDataURL(connectionUrl);
 
         res.json({
@@ -730,9 +713,9 @@ app.post("/api/pairing/qr", async (req, res) => {
         res.status(500).json({
             success: false,
             message: "Failed to generate QR code."
-        })
+        });
     }
-})
+});
 
 function getLocalIPs() {
     const interfaces = os.networkInterfaces();
@@ -751,50 +734,54 @@ function getLocalIPs() {
     return addresses;
 }
 
-console.log('Starting Neon connection test...');
-console.log('DATABASE_URL loaded:', Boolean(process.env.DATABASE_URL));
+module.exports = app;
 
-console.log('Starting Filebase connection test...');
+if (require.main === module) {
+    console.log('Starting Neon connection test...');
+    console.log('DATABASE_URL loaded:', Boolean(process.env.DATABASE_URL));
 
-s3.send(new ListBucketsCommand({}))
-    .then(result => {
-        console.log('Filebase connected successfully!');
-        console.log('Available buckets:', result.Buckets.map(bucket => bucket.Name));
-    })
-    .catch(error => {
-        console.error('Filebase connection failed:', error.message);
-    });
+    console.log('Starting Filebase connection test...');
 
-sql`SELECT NOW()`
-    .then(result => {
-        console.log('Neon connected successfully:', result[0].now);
-    })
-    .catch(error => {
-        console.error('Neon connection failed:', error.message);
-    });
+    s3.send(new ListBucketsCommand({}))
+        .then(result => {
+            console.log('Filebase connected successfully!');
+            console.log('Available buckets:', result.Buckets.map(bucket => bucket.Name));
+        })
+        .catch(error => {
+            console.error('Filebase connection failed:', error.message);
+        });
 
-app.listen(PORT, "0.0.0.0", () => {
-    console.log("\n==========================================");
-    console.log("             GCS Share is online!");
-    console.log(`                Version: 0.1.0`);
-    console.log(`                 Port: ${PORT}`);
-    console.log("==========================================\n");
+    sql`SELECT NOW()`
+        .then(result => {
+            console.log('Neon connected successfully:', result[0].now);
+        })
+        .catch(error => {
+            console.error('Neon connection failed:', error.message);
+        });
 
-    console.log(`Local: http://localhost:${PORT}`);
+    app.listen(PORT, "0.0.0.0", () => {
+        console.log("\n==========================================");
+        console.log("             GCS Share is online!");
+        console.log(`                Version: 0.1.0`);
+        console.log(`                 Port: ${PORT}`);
+        console.log("==========================================\n");
 
-    const addresses = getLocalIPs();
+        console.log(`Local: http://localhost:${PORT}`);
 
-    if (addresses.length === 0) {
-        console.log("\nNo local IP addresses found.");
-    } else {
-        console.log("\nAvailable local IP addresses:");
+        const addresses = getLocalIPs();
 
-        for (const info of addresses) {
-            console.log(
-                `${info.interface}: http://${info.address}:${PORT}`
-            );
+        if (addresses.length === 0) {
+            console.log("\nNo local IP addresses found.");
+        } else {
+            console.log("\nAvailable local IP addresses:");
+
+            for (const info of addresses) {
+                console.log(
+                    `${info.interface}: http://${info.address}:${PORT}`
+                );
+            }
         }
-    }
 
-    console.log("\n==========================================");
-});
+        console.log("\n==========================================");
+    });
+}
