@@ -7,7 +7,7 @@
     <style>
         :root {
             color-scheme: dark;
-            font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+            font-family: Arial, sans-serif;
             background: #0b1020;
             color: #eef2ff;
         }
@@ -82,6 +82,15 @@
             border: 1px solid rgb(255 255 255 / 20%);
             font-weight: 700; cursor: pointer; font-family: inherit;
         }
+
+        .send-row {
+            margin: 24px 0;
+        }
+
+        .send-row button {
+            font-family: inherit;
+            font-size: 1rem;
+        }
         #timer { color: #fda4af; font-weight: 700; }
         #status { margin-top: 16px; color: #67e8f9; min-height: 24px; }
     </style>
@@ -94,7 +103,13 @@
 
         <hr>
 
-        <!-- [FRONTEND] File preview list - backend fills this -->
+        <div class="send-row">
+            <input type="file" id="fileInput" hidden>
+            <button class="cta" id="sendBtn">Send Files</button>
+        </div>
+
+        <!-- Incoming transfers-->
+
         <div id="files-list">
             <p>Waiting for sender...</p>
         </div>
@@ -140,8 +155,8 @@
     const acceptBtn = document.getElementById('acceptBtn');
     const declineBtn = document.getElementById('declineBtn');
 
-    const deviceId = sessionStorage.getItem('gcsDeviceId');
-    const sessionToken = sessionStorage.getItem('gcsSessionToken');
+    let deviceId = sessionStorage.getItem('gcsDeviceId');
+    let sessionToken = sessionStorage.getItem('gcsSessionToken');
 
     let currentTransfer = null;
     let actionInProgress = false;
@@ -153,10 +168,137 @@
         };
     }
 
+    const fileInput = document.getElementById('fileInput');
+    const sendBtn = document.getElementById('sendBtn');
+
+    sendBtn.addEventListener('click', () => {
+        if (!deviceId || !sessionToken) {
+            status.textContent = 'Please pair your device first.';
+            return;
+        }
+
+        fileInput.click();
+    });
+
+    fileInput.addEventListener('change', async () => {
+        const file = fileInput.files [0];
+
+        if (!file) return;
+
+        const MAX_FILE_SIZE = 50 * 1024 * 1024;
+
+        if (file.size > MAX_FILE_SIZE) {
+            status.textContent = 'File too large! Maximum file size is 50 MB.';
+            fileInput.value = '';
+            return;
+        }
+
+        sendBtn.disabled = true;
+        status.textContent = `Uploading ${file.name}...`;
+
+        try {
+            const urlResponse = await fetch('/api/upload-url', {
+                method: 'POST',
+                headers: {
+                    ...authHeaders(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    filename: file.name,
+                    contentType: file.type,
+                    fileSize: file.size
+                })
+            });
+
+            const urlData = await urlResponse.json();
+
+            if (!urlResponse.ok || !urlData.success) {
+                throw new Error(urlData.message || 'Could not prepare upload');
+            }
+
+            const uploadResponse = await fetch(urlData.uploadUrl, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': file.type || 'application/octet-stream'
+                },
+                body: file
+            });
+
+            if (!uploadResponse.ok) {
+                throw new Error('Filebase upload failed');
+            }
+
+            const completeResponse = await fetch('/api/upload-complete', {
+                method: 'POST',
+                headers: {
+                    ...authHeaders(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    fileId: urlData.fileId
+                })
+            });
+
+            const completeData = await completeResponse.json();
+
+            if (!completeResponse.ok || !completeData.success) {
+                throw new Error(completeData.message || 'Upload completion failed');
+            }
+
+            status.textContent =
+                `Successfully sent ${completeData.file.originalName || file.name}!`;
+        } catch (error) {
+            status.textContent = `Upload failed: ${error.message}`;
+        } finally {
+            sendBtn.disabled = false;
+            fileInput.value = '';
+        }
+    });
+
     function updateActionButtons() {
         const unavailable = !currentTransfer || !expiresAt || expiresAt - Date.now() <= 0;
         acceptBtn.disabled = actionInProgress || unavailable;
         declineBtn.disabled = actionInProgress || unavailable;
+    }
+
+    async function connectFromQR() {
+        const params = new URLSearchParams(window.location.search);
+        const token = params.get('token');
+
+        if (!token) return true;
+
+        status.textContent = 'Connecting to paired device...';
+
+        try {
+            const response = await fetch('/api/pairing/verify', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ token })
+            });
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || 'Pairing failed.');
+            }
+
+            deviceId = data.deviceId;
+            sessionToken = data.sessionToken;
+
+            sessionStorage.setItem('gcsDeviceId', deviceId);
+            sessionStorage.setItem('gcsSessionToken', sessionToken);
+
+            history.replaceState({}, document.title, '/receive.html')
+
+            status.textContent = 'Successfully connected!';
+            return true;
+
+        } catch (error) {
+            status.textContent = 'Connection failed: ' + error.message;
+            return false;
+        }
     }
 
     updateActionButtons();
@@ -189,6 +331,9 @@
                 headers: authHeaders()
             });
 
+            console.log('Download response:', downloadResponse.status);
+
+
             if (!downloadResponse.ok) {
                 throw new Error('Download failed.');
             }
@@ -210,12 +355,15 @@
                 headers: authHeaders()
             });
             const completionData = await completionResponse.json();
+            console.log('Completion response', completionResponse.status, completionData);
 
             if (!completionResponse.ok || !completionData.success) {
-                throw new Error(completionData.message || 'Could not complete transfer.');
+                console.error('Transfer completion failed:', completionData);
+                status.textContent = 'File downloaded, but transfer cleanup failed.';
+            } else {
+                status.textContent = 'File downloaded successfully!';
             }
 
-            status.textContent = 'File downloaded successfully!';
             filesList.textContent = 'Transfer complete.';
             currentTransfer = null;
         } catch (error) {
@@ -341,12 +489,21 @@
         }
     }
 
-    if (deviceId && sessionToken) {
-        checkForTransfers();
-        setInterval(checkForTransfers, 1500);
-    } else {
-        status.textContent = 'Please pair your device first.';
+    async function initialise() {
+        const connected = await connectFromQR();
+
+        if (!connected) return;
+
+        if (deviceId && sessionToken) {
+            status.textContent = 'Connected. Ready to share files.';
+            checkForTransfers();
+            setInterval(checkForTransfers, 1500);
+        } else {
+            status.textContent = 'Please generate a QR code on another device and scan it.';
+        }
     }
+
+    initialise();
 
     // FRONTEND - Backend calls this after Accept, when files are ready to download
     // files = [{ name, size, url }]

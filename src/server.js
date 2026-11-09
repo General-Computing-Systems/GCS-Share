@@ -1,45 +1,25 @@
+require('dotenv').config();
+const sql = require('./database');
 const express = require('express');
 const path = require('path');
 const os = require("os");
 const QRCode = require('qrcode');
-const fs = require("fs");
 const crypto = require("crypto");
-const multer = require("multer")
+const s3 = require('./storage');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const {
+    ListBucketsCommand,
+    PutObjectCommand,
+    GetObjectCommand,
+    DeleteObjectCommand,
+    HeadObjectCommand
+} = require('@aws-sdk/client-s3');
 
 const app = express();
 const PORT = 3000;
+const FILEBASE_BUCKET = process.env.FILEBASE_BUCKET;
 const TRANSFER_EXPIRY = 2 * 60 * 1000;
-const transfers = new Map();
-
-const uploadDir = path.join(__dirname, "../uploads");
-
-fs.mkdirSync(uploadDir, { recursive: true });
-
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadDir);
-    },
-
-    filename: (req, file, cb) => {
-        const safeName = path.basename(
-            file.originalname.replace(/\\/g, "/")
-        )
-        .replace(/[\u0000-\u001f\u007f]/g, "")
-        .replace(/[^a-zA-Z0-9._ -]/g, "")
-        .trim()
-        .replace(/^\.+/, "")
-        .slice(0,100) || "file";
-
-        cb(null, `${crypto.randomUUID()}-${safeName}`);
-    }
-});
-
-const upload = multer({
-    storage,
-    limits: {
-        fileSize: 50 * 1024 * 1024
-    }
-});
+const activeDownloads = new Map();
 
 app.use(express.json());
 
@@ -58,7 +38,7 @@ const {
     removeSession
 } = require("./sessions");
 
-function authenticateDevice(req, res, next) {
+async function authenticateDevice(req, res, next) {
     const deviceId = req.get("x-device-id");
     const sessionToken = req.get("x-session-token");
 
@@ -69,198 +49,481 @@ function authenticateDevice(req, res, next) {
         });
     }
 
-    if (!verifySession(deviceId, sessionToken)) {
-        return res.status(401).json({
+    try {
+        const valid = await verifySession(deviceId, sessionToken);
+
+        if (!valid) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid session"
+            });
+        }
+
+        req.deviceId = deviceId;
+        next();
+    } catch (error) {
+        console.error("Session authentication failed:", error);
+
+        res.status(500).json({
             success: false,
-            message: "Invalid session"
+            message: "Authentication failed"
         });
     }
-
-    req.deviceId = deviceId;
-    next();
 }
 
-function removeUploadedFile(filename) {
-    return fs.promises.unlink(path.join(uploadDir, filename)).catch(error => {
-        if (error.code !== "ENOENT") throw error;
-    });
+async function removeUploadedFile(filename) {
+    await s3.send(new DeleteObjectCommand({
+        Bucket: FILEBASE_BUCKET,
+        Key: filename
+    }));
 }
 
-function expireTransfer(transfer) {
-    if (transfer.activeDownloads > 0) {
-        transfer.expired = true;
+async function expireTransfer(transfer) {
+    const downloadState = activeDownloads.get(transfer.id);
+
+    if (downloadState && downloadState.count > 0) {
+        downloadState.expired = true;
         return;
     }
 
-    transfers.delete(transfer.id);
+    activeDownloads.delete(transfer.id);
 
-    removeUploadedFile(transfer.file.id).catch(error => {
+    try {
+        await removeUploadedFile(transfer.file_id);
+    } catch (error) {
         console.error("Expired transfer cleanup failed:", error);
-    });
+    }
+
+    await sql`
+        DELETE FROM transfers
+        WHERE id = ${transfer.id}
+    `;
 }
 
-setInterval(() => {
-    const now = Date.now();
-    for (const transfer of transfers.values()) {
-        if (now >= transfer.expiresAt) {
-            expireTransfer(transfer);
+setInterval(async () => {
+    try {
+        const expiredTransfers = await sql`
+            SELECT id, file_id
+            FROM transfers
+            WHERE expires_at <= NOW()
+        `;
+
+        for (const transfer of expiredTransfers) {
+            await expireTransfer(transfer);
         }
+    } catch (error) {
+        console.error("Automatic transfer cleanup failed:", error);
     }
 }, 1000).unref();
 
 app.use(express.static(path.join(__dirname, "../public")));
 
-app.post(
-    "/api/upload",
-    authenticateDevice,
-    upload.single("file"),
-    async (req, res) => {
-        if (!req.file) {
+app.post("/api/upload-url", authenticateDevice, async (req, res) => {
+    try {
+        const { filename, contentType, fileSize } = req.body;
+
+        if (
+            !filename ||
+            typeof filename !== "string" ||
+            !Number.isSafeInteger(fileSize) ||
+            fileSize <= 0 ||
+            fileSize > 50 * 1024 * 1024
+        ) {
             return res.status(400).json({
                 success: false,
-                message: "No file provided"
+                message: "Invalid file details"
             });
         }
 
-        const recipientDeviceId = getOtherDevice(req.deviceId);
+        const recipientDeviceId = await getOtherDevice(req.deviceId);
+
         if (!recipientDeviceId) {
-            await removeUploadedFile(req.file.filename);
             return res.status(409).json({
                 success: false,
                 message: "No paired recipient is available"
             });
         }
 
-        const transfer = {
-            id: crypto.randomUUID(),
-            senderDeviceId: req.deviceId,
-            recipientDeviceId,
-            file: {
-                id: req.file.filename,
-                name: req.file.originalname,
-                size: req.file.size
-            },
-            status: "pending",
-            activeDownloads: 0,
-            expired: false,
-            expiresAt: Date.now() + TRANSFER_EXPIRY
-        };
-        transfers.set(transfer.id, transfer);
+        const safeName = path.basename(
+            filename.replace(/\\/g, "/")
+        )
+        .replace(/[\u0000-\u001f\u007f]/g, "")
+        .replace(/[^a-zA-Z0-9._ -]/g, "")
+        .trim()
+        .replace(/^\.+/, "")
+        .slice(0, 100) || "file";
+
+        const fileId = `${crypto.randomUUID()}-${safeName}`;
+        const safeContentType =
+            typeof contentType === "string" && contentType.length <= 255
+                ? contentType
+                : "application/octet-stream";
+
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+        const command = new PutObjectCommand({
+            Bucket: FILEBASE_BUCKET,
+            Key: fileId,
+            ContentType: safeContentType
+        });
+
+        const uploadUrl = await getSignedUrl(s3, command, {
+            expiresIn: 300
+        });
+
+        await sql`
+            INSERT INTO pending_uploads (
+                file_id,
+                sender_device_id,
+                recipient_device_id,
+                file_name,
+                file_size,
+                content_type,
+                expires_at
+            )
+            VALUES (
+                ${fileId},
+                ${req.deviceId},
+                ${recipientDeviceId},
+                ${safeName},
+                ${fileSize},
+                ${safeContentType},
+                ${expiresAt}
+            )
+        `;
+
+        res.json({
+            success: true,
+            uploadUrl,
+            fileId
+        });
+
+    } catch (error) {
+        console.error("Presigned URL creation failed:", error);
+
+        res.status(500).json({
+            success: false,
+            message: "Could not create upload URL"
+        });
+    }
+});
+
+app.post("/api/upload-complete", authenticateDevice, async (req, res) => {
+    try {
+        const { fileId } = req.body;
+
+        if (!fileId || typeof fileId !== "string") {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid file ID"
+            });
+        }
+
+        const result = await sql`
+            SELECT *
+            FROM pending_uploads
+            WHERE file_id = ${fileId}
+            AND sender_device_id = ${req.deviceId}
+            LIMIT 1
+        `;
+
+        const pending = result[0];
+
+        if (!pending) {
+            return res.status(404).json({
+                success: false,
+                message: "Pending upload not found"
+            });
+        }
+
+        if (new Date(pending.expires_at).getTime() <= Date.now()) {
+            await s3.send(new DeleteObjectCommand({
+                Bucket: FILEBASE_BUCKET,
+                Key: fileId
+            }));
+
+            await sql`
+                DELETE FROM pending_uploads
+                WHERE file_id = ${fileId}
+            `;
+
+            return res.status(410).json({
+                success: false,
+                message: "Upload authorization expired"
+            });
+        }
+
+        const file = await s3.send(new HeadObjectCommand({
+            Bucket: FILEBASE_BUCKET,
+            Key: fileId
+        }));
+
+        if (Number(file.ContentLength) !== Number(pending.file_size)) {
+            await s3.send(new DeleteObjectCommand({
+                Bucket: FILEBASE_BUCKET,
+                Key: fileId
+            }));
+
+            await sql`
+                DELETE FROM pending_uploads
+                WHERE file_id = ${fileId}
+            `;
+
+            return res.status(400).json({
+                success: false,
+                message: "Uploaded file size does not match"
+            });
+        }
+
+        const transferId = crypto.randomUUID();
+        const expiresAt = new Date(Date.now() + TRANSFER_EXPIRY);
+
+        await sql`
+            INSERT INTO transfers (
+                id,
+                sender_device_id,
+                recipient_device_id,
+                file_id,
+                file_name,
+                file_size,
+                status,
+                expires_at
+            )
+            VALUES (
+                ${transferId},
+                ${pending.sender_device_id},
+                ${pending.recipient_device_id},
+                ${fileId},
+                ${pending.file_name},
+                ${pending.file_size},
+                'pending',
+                ${expiresAt}
+            )
+        `;
+
+        await sql`
+            DELETE FROM pending_uploads
+            WHERE file_id = ${fileId}
+        `;
 
         res.json({
             success: true,
             message: "File uploaded successfully",
             file: {
-                id: req.file.filename,
-                originalName: req.file.originalname,
-                size: req.file.size
+                id: fileId,
+                originalName: pending.file_name,
+                size: Number(pending.file_size)
             },
             transfer: {
-                id: transfer.id,
-                expiresAt: transfer.expiresAt
+                id: transferId,
+                expiresAt: expiresAt.getTime()
             }
         });
-    }
-);
 
-app.get("/api/transfers/pending", authenticateDevice, (req, res) => {
-    const now = Date.now();
-    for (const transfer of transfers.values()) {
-        if (now >= transfer.expiresAt) {
-            expireTransfer(transfer);
-        }
-    }
+    } catch (error) {
+        console.error("Upload completion failed:", error);
 
-    const transfer = [...transfers.values()].find(item =>
-        item.recipientDeviceId === req.deviceId && item.status === "pending"
-    );
+        res.status(500).json({
+            success: false,
+            message: "Failed to complete upload"
+        });
+    }
+});
+
+app.get("/api/transfers/pending", authenticateDevice, async (req, res) => {
+    const result = await sql`
+        SELECT
+            id,
+            file_id,
+            file_name,
+            file_size,
+            expires_at
+        FROM transfers
+        WHERE recipient_device_id = ${req.deviceId}
+        AND status = 'pending'
+        AND expires_at > NOW()
+        ORDER BY created_at ASC
+        LIMIT 1
+    `;
+
+    const transfer = result[0];
 
     res.json({
         success: true,
         transfer: transfer ? {
             id: transfer.id,
             senderName: "Connected device",
-            file: transfer.file,
-            expiresAt: transfer.expiresAt
+            file: {
+                id: transfer.file_id,
+                name: transfer.file_name,
+                size: Number(transfer.file_size)
+            },
+            expiresAt: new Date(transfer.expires_at).getTime()
         } : null
     });
 });
 
-app.post("/api/transfers/:id/accept", authenticateDevice, (req, res) => {
-    const transfer = transfers.get(req.params.id);
-    if (!transfer || transfer.recipientDeviceId !== req.deviceId) {
-        return res.status(404).json({ success: false, message: "Transfer not found" });
+app.post("/api/transfers/:id/accept", authenticateDevice, async (req, res) => {
+    const result = await sql`
+        SELECT
+            id,
+            file_id,
+            file_name,
+            status,
+            expires_at
+        FROM transfers
+        WHERE id = ${req.params.id}
+        AND recipient_device_id = ${req.deviceId}
+    `;
+
+    const transfer = result[0];
+
+    if (!transfer) {
+        return res.status(404).json({
+            success: false,
+            message: "Transfer not found"
+        });
     }
 
-    if (Date.now() >= transfer.expiresAt) {
-        expireTransfer(transfer);
-        return res.status(410).json({ success: false, message: "Transfer expired" });
+    if (new Date(transfer.expires_at).getTime() <= Date.now()) {
+        return res.status(410).json({
+            success: false,
+            message: "Transfer expired"
+        });
     }
 
     if (transfer.status === "pending") {
-        transfer.status = "accepted";
-        transfer.acceptedAt = Date.now();
+        await sql`
+            UPDATE transfers
+            SET
+                status = 'accepted',
+                accepted_at = NOW()
+            WHERE id = ${transfer.id}
+            AND status = 'pending'
+        `;
     } else if (transfer.status !== "accepted") {
-        return res.status(409).json({ success: false, message: "Transfer is no longer pending" });
+        return res.status(409).json({
+            success: false,
+            message: "Transfer is no longer pending"
+        });
     }
 
     res.json({
         success: true,
-        file: { id: transfer.file.id, name: transfer.file.name }
+        file: {
+            id: transfer.file_id,
+            name: transfer.file_name
+        }
     });
 });
 
-app.post("/api/transfers/:id/decline", authenticateDevice, (req, res) => {
-    const transfer = transfers.get(req.params.id);
-    if (!transfer || transfer.recipientDeviceId !== req.deviceId) {
-        return res.status(404).json({ success: false, message: "Transfer not found" });
+app.post("/api/transfers/:id/decline", authenticateDevice, async (req, res) => {
+    const result = await sql`
+        SELECT id, file_id, status, expires_at
+        FROM transfers
+        WHERE id = ${req.params.id}
+        AND recipient_device_id = ${req.deviceId}
+    `;
+
+    const transfer = result[0];
+
+    if (!transfer) {
+        return res.status(404).json({
+            success: false,
+            message: "Transfer not found"
+        });
     }
 
-    if (Date.now() >= transfer.expiresAt) {
-        expireTransfer(transfer);
-        return res.status(410).json({ success: false, message: "Transfer expired" });
+    if (new Date(transfer.expires_at).getTime() <= Date.now()) {
+        return res.status(410).json({
+            success: false,
+            message: "Transfer expired"
+        });
     }
 
     if (transfer.status !== "pending") {
-        return res.status(409).json({ success: false, message: "Transfer is no longer pending" });
+        return res.status(409).json({
+            success: false,
+            message: "Transfer is no longer pending"
+        });
     }
 
-    transfer.status = "declined";
-    transfer.declinedAt = Date.now();
+    await sql`
+        UPDATE transfers
+        SET
+            status = 'declined',
+            declined_at = NOW()
+        WHERE id = ${transfer.id}
+        AND status = 'pending'
+    `;
+
+    await removeUploadedFile(transfer.file_id);
+
     res.json({ success: true });
 });
 
 app.post("/api/transfers/:id/complete", authenticateDevice, async (req, res) => {
-    const transfer = transfers.get(req.params.id);
-    if (!transfer || transfer.recipientDeviceId !== req.deviceId) {
-        return res.status(404).json({ success: false, message: "Transfer not found" });
+    const result = await sql`
+        SELECT
+            id,
+            file_id,
+            status,
+            expires_at
+        FROM transfers
+        WHERE id = ${req.params.id}
+        AND recipient_device_id = ${req.deviceId}
+    `;
+
+    const transfer = result[0];
+
+    if (!transfer) {
+        return res.status(404).json({
+            success: false,
+            message: "Transfer not found"
+        });
     }
 
-    if (Date.now() >= transfer.expiresAt) {
-        expireTransfer(transfer);
-        return res.status(410).json({ success: false, message: "Transfer expired" });
+    if (new Date(transfer.expires_at).getTime() <= Date.now()) {
+        return res.status(410).json({
+            success: false,
+            message: "Transfer expired"
+        });
     }
 
     if (transfer.status === "completed") {
         return res.json({ success: true });
     }
+
     if (transfer.status !== "accepted") {
-        return res.status(409).json({ success: false, message: "Transfer has not been accepted" });
+        return res.status(409).json({
+            success: false,
+            message: "Transfer has not been accepted"
+        });
     }
 
     try {
-        await removeUploadedFile(transfer.file.id);
+        await removeUploadedFile(transfer.file_id);
     } catch (error) {
         console.error("Completed transfer cleanup failed:", error);
-        return res.status(500).json({ success: false, message: "Could not clean up transferred file" });
+        return res.status(500).json({
+            success: false,
+            message: "Could not clean up transferred file"
+        });
     }
 
-    transfer.status = "completed";
-    transfer.completedAt = Date.now();
+    await sql`
+        UPDATE transfers
+        SET
+            status = 'completed',
+            completed_at = NOW()
+        WHERE id = ${transfer.id}
+        AND status = 'accepted'
+    `;
+
     res.json({ success: true });
 });
 
-app.get("/api/files/:id", authenticateDevice, (req, res) => {
+app.get("/api/files/:id", authenticateDevice, async (req, res) => {
     const filename = req.params.id;
 
     if (path.basename(filename) !== filename) {
@@ -270,53 +533,87 @@ app.get("/api/files/:id", authenticateDevice, (req, res) => {
         });
     }
 
-    const transfer = [...transfers.values()].find(item => item.file.id === filename);
-    if (!transfer || transfer.recipientDeviceId !== req.deviceId) {
+    const result = await sql`
+        SELECT
+            id,
+            file_id,
+            file_name,
+            status,
+            expires_at
+        FROM transfers
+        WHERE file_id = ${filename}
+        AND recipient_device_id = ${req.deviceId}
+        LIMIT 1
+    `;
+
+    const transfer = result[0];
+
+    if (!transfer) {
         return res.status(404).json({
             success: false,
             message: "Accepted transfer file not found"
         });
     }
 
-    if (Date.now() >= transfer.expiresAt) {
-        expireTransfer(transfer);
-        return res.status(410).json({ success: false, message: "Transfer expired" });
+    if (new Date(transfer.expires_at).getTime() <= Date.now()) {
+        await expireTransfer(transfer);
+
+        return res.status(410).json({
+            success: false,
+            message: "Transfer expired"
+        });
     }
 
     if (transfer.status !== "accepted") {
-        return res.status(409).json({ success: false, message: "Transfer has not been accepted" });
-    }
-
-    const filePath = path.resolve(uploadDir, filename);
-
-    if (!filePath.startsWith(uploadDir + path.sep)) {
-        return res.status(400).json({
+        return res.status(409).json({
             success: false,
-            message: "Invalid file path"
+            message: "Transfer has not been accepted"
         });
     }
 
-    fs.stat(filePath, (err, stats) => {
-        if (err || !stats.isFile()) {
+    try {
+        const file = await s3.send(new GetObjectCommand({
+            Bucket: FILEBASE_BUCKET,
+            Key: filename
+        }));
+
+        if (!file.Body) {
             return res.status(404).json({
                 success: false,
-                message: "File not found"
+                message: "File not found in storage"
             });
         }
 
-        transfer.activeDownloads++;
-        res.download(filePath, transfer.file.name, error => {
-            transfer.activeDownloads--;
+        res.attachment(transfer.file_name);
+        res.setHeader(
+            "Content-Type",
+            file.ContentType || "application/octet-stream"
+        );
 
-            if (transfer.activeDownloads === 0 && transfer.expired) {
-                expireTransfer(transfer);
-            }
+        if (file.ContentLength !== undefined) {
+            res.setHeader("Content-Length", file.ContentLength);
+        }
 
-            if (error) {
-                console.error("File download failed:", error);
+        file.Body.on("error", error => {
+            console.error("File download failed:", error);
+
+            if (!res.headersSent) {
+                res.status(500).end();
+            } else {
+                res.destroy(error);
             }
         });
-    });
+
+        file.Body.pipe(res);
+
+    } catch (error) {
+        console.error("Filebase download failed:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Failed to retrieve file from storage"
+        });
+    }
 });
 
 app.get("/api/status", (req, res) => {
@@ -327,7 +624,7 @@ app.get("/api/status", (req, res) => {
     });
 });
 
-app.get("/api/devices/me", (req, res) => {
+app.get("/api/devices/me", async (req, res) => {
     const deviceId = req.get("x-device-id");
     const sessionToken = req.get("x-session-token");
 
@@ -338,7 +635,7 @@ app.get("/api/devices/me", (req, res) => {
         });
     }
 
-    const valid = verifySession(deviceId, sessionToken);
+    const valid = await verifySession(deviceId, sessionToken);
 
     if (!valid) {
         return res.status(401).json({
@@ -354,9 +651,9 @@ app.get("/api/devices/me", (req, res) => {
     });
 });
 
-app.post("/api/pairing/create", (req, res) => {
-    const session = createSession();
-    const pairing = createPairing(session.sessionId);
+app.post("/api/pairing/create", async (req, res) => {
+    const session = await createSession();
+    const pairing = await createPairing(session.sessionId);
 
     res.json({
         success: true,
@@ -367,7 +664,7 @@ app.post("/api/pairing/create", (req, res) => {
     });
 });
 
-app.post("/api/pairing/verify", (req, res) => {
+app.post("/api/pairing/verify", async (req, res) => {
     const { token } = req.body;
 
     if (!token || typeof token !== "string") {
@@ -377,7 +674,7 @@ app.post("/api/pairing/verify", (req, res) => {
         });
     }
 
-    const pairing = consumePairing(token);
+    const pairing = await consumePairing(token);
 
     if (!pairing) {
         return res.status(401).json({
@@ -387,7 +684,7 @@ app.post("/api/pairing/verify", (req, res) => {
     }
 
     try {
-        const session = joinSession(pairing.sessionId);
+        const session = await joinSession(pairing.sessionId);
 
         res.json({
             success: true,
@@ -405,8 +702,8 @@ app.post("/api/pairing/verify", (req, res) => {
 
 app.post("/api/pairing/qr", async (req, res) => {
     try {
-        const session = createSession();
-        const pairing = createPairing(session.sessionId);
+        const session = await createSession();
+        const pairing = await createPairing(session.sessionId);
 
         const localIP = getLocalIPs().find(ip =>
             ip.interface === "Ethernet"
@@ -417,7 +714,7 @@ app.post("/api/pairing/qr", async (req, res) => {
         }
 
         const connectionUrl =
-            `http://${localIP}:${PORT}/connect.html?token=${encodeURIComponent(pairing.token)}`;
+            `http://${localIP}:${PORT}/receive.html?token=${encodeURIComponent(pairing.token)}`;
         const qrCode = await QRCode.toDataURL(connectionUrl);
 
         res.json({
@@ -453,6 +750,28 @@ function getLocalIPs() {
     }
     return addresses;
 }
+
+console.log('Starting Neon connection test...');
+console.log('DATABASE_URL loaded:', Boolean(process.env.DATABASE_URL));
+
+console.log('Starting Filebase connection test...');
+
+s3.send(new ListBucketsCommand({}))
+    .then(result => {
+        console.log('Filebase connected successfully!');
+        console.log('Available buckets:', result.Buckets.map(bucket => bucket.Name));
+    })
+    .catch(error => {
+        console.error('Filebase connection failed:', error.message);
+    });
+
+sql`SELECT NOW()`
+    .then(result => {
+        console.log('Neon connected successfully:', result[0].now);
+    })
+    .catch(error => {
+        console.error('Neon connection failed:', error.message);
+    });
 
 app.listen(PORT, "0.0.0.0", () => {
     console.log("\n==========================================");

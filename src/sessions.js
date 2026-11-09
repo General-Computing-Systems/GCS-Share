@@ -1,24 +1,26 @@
 const crypto = require('crypto');
+const sql = require('./database');
 
-const sessions = new Map();
-const sharedSessions = new Map();
-
-function createSession() {
+async function createSession() {
     const sessionId = crypto.randomUUID();
 
-    sharedSessions.set(sessionId, {
-        devices: [],
-        createdAt: Date.now()
-    });
+    await sql `
+        INSERT INTO shared_sessions (id)
+        VALUES (${sessionId})
+    `;
 
     return joinSession(sessionId);
 }
 
-function joinSession(sessionId) {
-    const sharedSession = sharedSessions.get(sessionId);
+async function joinSession(sessionId) {
+    const sharedSession = await sql`
+        SELECT id
+        FROM shared_sessions
+        WHERE id = ${sessionId}
+    `;
 
-    if (!sharedSession) {
-        throw new Error('Shared session is full');
+    if (sharedSession.length === 0) {
+        throw new Error('Shared session not found');
     }
 
     const deviceId = crypto.randomUUID();
@@ -29,23 +31,38 @@ function joinSession(sessionId) {
         .update(sessionToken)
         .digest('hex');
 
-    sessions.set(deviceId, {
-        tokenHash,
-        sessionId,
-        createdAt: Date.now()
-    });
-
-    sharedSession.devices.push(deviceId);
+    await sql`
+        INSERT INTO session_devices (
+            device_id,
+            session_id,
+            token_hash
+        )
+        VALUES (
+            ${deviceId},
+            ${sessionId},
+            ${tokenHash}
+        )
+    `;
 
     return {
-        deviceId, sessionToken, sessionId
+        deviceId,
+        sessionToken,
+        sessionId
     };
 }
 
-function verifySession(deviceId, sessionToken) {
-    const session = sessions.get(deviceId);
+async function verifySession(deviceId, sessionToken) {
+    if (!deviceId || !sessionToken) {
+        return false;
+    }
 
-    if (!session || !sessionToken) {
+    const result = await sql`
+        SELECT token_hash
+        FROM session_devices
+        WHERE device_id = ${deviceId}
+    `;
+
+    if (result.length === 0) {
         return false;
     }
 
@@ -56,44 +73,58 @@ function verifySession(deviceId, sessionToken) {
 
     return crypto.timingSafeEqual(
         Buffer.from(tokenHash, 'hex'),
-        Buffer.from(session.tokenHash, 'hex')
+        Buffer.from(result[0].token_hash, 'hex')
     );
 }
 
-function getSharedSessionId(deviceId) {
-    const session = sessions.get(deviceId);
-    return session ? session.sessionId : null;
+async function getSharedSessionId(deviceId) {
+    const result = await sql`
+        SELECT session_id
+        FROM session_devices
+        WHERE device_id = ${deviceId}
+    `;
+
+    return result.length > 0 ? result[0].session_id : null;
 }
 
-function getOtherDevice(deviceId) {
-    const sessionId = getSharedSessionId(deviceId);
+async function getOtherDevice(deviceId) {
+    const result = await sql`
+        SELECT other.device_id
+        FROM session_devices AS current
+        JOIN session_devices AS other
+            ON other.session_id = current.session_id
+            AND other.device_id <> current.device_id
+        WHERE current.device_id = ${deviceId}
+        LIMIT 1
+    `;
 
-    if (!sessionId) return null;
-
-    const sharedSession = sharedSessions.get(sessionId);
-
-    if (!sharedSession) return null;
-
-    return sharedSession.devices.find(id => id !== deviceId) || null;
+    return result.length > 0 ? result[0].device_id : null;
 }
 
-function removeSession(deviceId) {
-    const session = sessions.get(deviceId);
+async function removeSession(deviceId) {
+    const result = await sql`
+        DELETE FROM session_devices
+        WHERE device_id = ${deviceId}
+        RETURNING session_id
+    `;
 
-    if (!session) return false;
-
-    const sharedSession = sharedSessions.get(session.sessionId);
-    if (sharedSession) {
-        sharedSession.devices = sharedSession.devices.filter(
-            id => id !== deviceId
-        );
-
-        if (sharedSession.devices.length === 0) {
-            sharedSessions.delete(session.sessionId);
-        }
+    if (result.length === 0) {
+        return false;
     }
 
-    return sessions.delete(deviceId);
+    const sessionId = result[0].session_id;
+
+    await sql`
+        DELETE FROM shared_sessions
+        WHERE id = ${sessionId}
+        AND NOT EXISTS (
+            SELECT 1
+            FROM session_devices
+            WHERE session_id = ${sessionId}
+        )
+    `;
+
+    return true;
 }
 
 module.exports = {

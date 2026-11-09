@@ -1,43 +1,64 @@
 const crypto = require('crypto');
+const sql = require('./database');
 
 const PAIRING_EXPIRY= 2 * 60 * 1000;
 
-let currentPairing = null;
-
-function createPairing(sessionId) {
+async function createPairing(sessionId) {
     const token = crypto.randomBytes(32).toString('hex');
 
-    currentPairing = {
-        token,
-        sessionId,
-        expiresAt: Date.now() + PAIRING_EXPIRY
-    };
+    const tokenHash = crypto
+        .createHash('sha256')
+        .update(token)
+        .digest('hex');
+
+    const expiresAt = Date.now() + PAIRING_EXPIRY;
+
+    await sql`
+        DELETE FROM pairing_tokens
+    `;
+
+    await sql`
+        INSERT INTO pairing_tokens (
+            token_hash,
+            session_id,
+            expires_at
+        )
+        VALUES (
+            ${tokenHash},
+            ${sessionId},
+            ${new Date(expiresAt)}
+        )
+    `;
 
     return {
         token,
-        expiresAt: currentPairing.expiresAt
+        expiresAt
     };
 }
 
-function consumePairing(token) {
-    if (!currentPairing) {
+async function consumePairing(token) {
+    if (!token) {
         return null;
     }
 
-    if (Date.now() > currentPairing.expiresAt) {
-        currentPairing = null;
+    const tokenHash = crypto
+        .createHash('sha256')
+        .update(token)
+        .digest('hex');
+
+    const result = await sql`
+        DELETE FROM pairing_tokens
+        WHERE token_hash = ${tokenHash}
+        AND expires_at > NOW()
+        RETURNING session_id
+    `;
+
+    if (result.length === 0) {
         return null;
     }
-
-    if (token !== currentPairing.token) {
-        return null;
-    }
-
-    const pairing = currentPairing;
-    currentPairing = null;
 
     return {
-        sessionId: pairing.sessionId
+        sessionId: result[0].session_id
     };
 }
 

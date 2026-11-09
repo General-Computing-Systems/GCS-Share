@@ -7,7 +7,7 @@
     <style>
         :root {
             color-scheme: dark;
-            font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+            font-family: Arial, sans-serif;
             background: #0b1020;
             color: #eef2ff;
         }
@@ -73,6 +73,59 @@
             text-decoration: none;
             font-weight: 700;
         }
+
+        .options {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 20px;
+            margin-top: 24px;
+            width: 100%;
+        }
+
+        .option {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 14px;
+            min-width: 14px;
+            padding: 28px;
+            border: 1px solid rgb(255 255 255 / 10%);
+            border-radius: 18px;
+            background: rgb(255 255 255 / 4%);
+            color: #eef2ff;
+            text-decoration: none;
+            overflow: hidden;
+            transition: 0.2s ease;
+        }
+
+        .option:hover {
+            background: rgb(255 255 255 / 9%);
+            border-color: #818cf8;
+            transform: translateY(-3px);
+        }
+
+        .option-icon {
+            display: block;
+            line-height: 1;
+            font-size: 2rem;
+            color: #a5b4fc;
+        }
+
+        .option strong {
+            font-size: 1.1rem;
+        }
+
+        .option span:last-child {
+            color: #aab4ca;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 550px) {
+            .options {
+                grid-template-columns: minmax(0, 1fr);
+            }
+        }
     </style>
 </head>
 <body>
@@ -81,9 +134,22 @@
         <p>Local file sharing, simplified.</p>
         <p id="status">Connecting...</p>
         <hr>
-        <p>GCS Share is an easy-to-use alternative to other file sharing tools.</p>
-        <p>It offers a simple way to transfer files using a QR code system.</p>
-        <a class="cta" href="/share.html">Open QR Share →</a>
+        
+        <p>Choose how you'd like to connect:</p>
+
+        <div class="options">
+            <a class="option" href="/share.html">
+                <span class="option-icon">▦</span>
+                <strong>Generate a code</strong>
+                <span>Create a QR code for another device to scan.</span>
+            </a>
+
+            <a class="option" href="/receive.html">
+                <span class="option-icon">⌗</span>
+                <strong>Receive a code</strong>
+                <span>Already have a QR code? Scan it with you camera.</span>
+            </a>
+        </div>
     </main>
 
     <script src="app.js"></script>
